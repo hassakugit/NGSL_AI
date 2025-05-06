@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NGSL Translator</title>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: auto; background-color: #f4f4f4; }
+        .container { background-color: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        textarea { width: 98%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; min-height: 100px; margin-bottom: 15px; }
+        .controls { display: flex; gap: 15px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap;}
+        .control-group { display: flex; flex-direction: column; }
+        select, input[type="number"] { padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        .results { margin-top: 25px; border-top: 1px solid #eee; padding-top: 20px; }
+        .result-section { margin-bottom: 20px; padding: 15px; background-color: #e9f5ff; border-left: 4px solid #007bff; border-radius: 4px;}
+        .result-section h3 { margin-top: 0; color: #0056b3; border-bottom: 1px solid #cce0ff; padding-bottom: 5px;}
+        .result-section code { background-color: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
+        .error { color: red; font-weight: bold; margin-top: 15px; padding: 10px; background-color: #ffe0e0; border: 1px solid red; border-radius: 4px;}
+        .loading { text-align: center; padding: 20px; font-style: italic; color: #555;}
+        #config-info { font-size: 0.9em; color: #666; margin-bottom: 20px; background-color: #eee; padding: 10px; border-radius: 4px; }
+        .violations-list { max-height: 100px; overflow-y: auto; background-color: #fff8dc; padding: 5px; border: 1px dashed #ccc; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>NGSL Translator</h1>
+
+        <div id="config-info">Loading configuration...</div>
+
+        <div class="input-area">
+            <label for="japanese-input">Enter your Japanese text here:</label>
+            <textarea id="japanese-input" placeholder="例：これはテストです。"></textarea>
+
+            <div class="controls">
+                <div class="control-group">
+                    <label for="week-select">Target NGSL Week:</label>
+                    <select id="week-select"></select>
+                </div>
+                <div class="control-group">
+                     <label for="threshold-input">Coverage Threshold (%):</label>
+                     <input type="number" id="threshold-input" min="0" max="100" step="1" value="90">
+                </div>
+                <button id="generate-button" disabled>Generate</button>
+            </div>
+        </div>
+
+        <div id="loading-indicator" class="loading" style="display: none;">
+            Generating translation... Please wait. This may take a while.
+        </div>
+        <div id="error-message" class="error" style="display: none;"></div>
+
+        <div id="results-area" class="results" style="display: none;">
+            <h2>Results</h2>
+
+            <div class="result-section">
+                <h3>Original Japanese Input</h3>
+                <p id="result-original-jp"></p>
+            </div>
+
+            <div class="result-section">
+                <h3>Simplified Japanese Sentences</h3>
+                <ul id="result-simplified-jp"></ul>
+            </div>
+
+            <div class="result-section">
+                <h3>Initial English Translation</h3>
+                <p id="result-initial-en"></p>
+            </div>
+
+            <div class="result-section">
+                <h3>Final English Translation (Vocabulary Constrained)</h3>
+                <p id="result-final-en"></p>
+                <p><strong>Vocabulary Coverage:</strong> <code id="result-coverage"></code>%</p>
+                <p><strong>Violating Words (<span id="violation-count">0</span>):</strong></p>
+                <div id="result-violations" class="violations-list">None</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const japaneseInput = document.getElementById('japanese-input');
+        const weekSelect = document.getElementById('week-select');
+        const thresholdInput = document.getElementById('threshold-input');
+        const generateButton = document.getElementById('generate-button');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const errorMessage = document.getElementById('error-message');
+        const resultsArea = document.getElementById('results-area');
+        const configInfo = document.getElementById('config-info');
+
+        // Result display elements
+        const resultOriginalJp = document.getElementById('result-original-jp');
+        const resultSimplifiedJp = document.getElementById('result-simplified-jp');
+        const resultInitialEn = document.getElementById('result-initial-en');
+        const resultFinalEn = document.getElementById('result-final-en');
+        const resultCoverage = document.getElementById('result-coverage');
+        const resultViolations = document.getElementById('result-violations');
+        const violationCount = document.getElementById('violation-count');
+
+        let config = {}; // To store loaded config
+
+        // --- Initialization ---
+        async function initializeApp() {
+            try {
+                const response = await fetch('/api/config');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                config = await response.json();
+
+                // Populate Config Info
+                configInfo.innerHTML = `
+                    Using Translation Model: <code>${config.translation_model}</code><br>
+                    Using Rewriting Model: <code>${config.causal_lm_model}</code><br>
+                    Running on Device: <code>${config.device}</code>
+                `;
+
+                // Populate Week Select dropdown
+                weekSelect.innerHTML = ''; // Clear existing options
+                if (config.available_weeks && config.available_weeks.length > 0) {
+                    config.available_weeks.forEach(week => {
+                        const option = document.createElement('option');
+                        option.value = week;
+                        option.textContent = `Week ${week}`;
+                        weekSelect.appendChild(option);
+                    });
+                     // Set default week from config
+                    weekSelect.value = config.default_week;
+                } else {
+                     const option = document.createElement('option');
+                     option.value = "";
+                     option.textContent = "No vocab lists found";
+                     weekSelect.appendChild(option);
+                     weekSelect.disabled = true; // Disable if no lists
+                     generateButton.disabled = true; // Disable generate if no lists? Or allow translate without check? Let's allow for now.
+                     console.warn("No available vocabulary weeks found via config API.");
+                }
+
+                // Set default threshold from config
+                thresholdInput.value = config.default_threshold;
+
+                // Enable button once config is loaded
+                generateButton.disabled = false;
+
+            } catch (error) {
+                console.error("Error fetching config:", error);
+                configInfo.innerHTML = 'Error loading configuration from backend.';
+                errorMessage.textContent = `Failed to load configuration: ${error.message}. Please ensure the backend is running.`;
+                errorMessage.style.display = 'block';
+                generateButton.disabled = true; // Keep disabled if config fails
+            }
+        }
+
+        // --- Event Listeners ---
+        generateButton.addEventListener('click', handleGenerateClick);
+
+        // --- Functions ---
+        async function handleGenerateClick() {
+            const japaneseText = japaneseInput.value.trim();
+            const selectedWeek = weekSelect.value;
+            const selectedThreshold = parseFloat(thresholdInput.value);
+
+            if (!japaneseText) {
+                showError("Please enter some Japanese text.");
+                return;
+            }
+             if (selectedWeek === "" && config.available_weeks && config.available_weeks.length > 0) {
+                showError("Please select a target vocabulary week.");
+                return;
+            }
+             if (isNaN(selectedThreshold) || selectedThreshold < 0 || selectedThreshold > 100) {
+                showError("Please enter a valid threshold between 0 and 100.");
+                return;
+            }
+
+
+            // Disable button, show loading, hide error/results
+            setLoadingState(true);
+
+            try {
+                const payload = {
+                    japanese: japaneseText,
+                    week: parseInt(selectedWeek, 10), // Ensure week is integer
+                    threshold: selectedThreshold
+                    // model_name: null // Add if model switching is implemented
+                };
+
+                const response = await fetch('/api/translate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!response.ok) {
+                     const errorData = await response.json().catch(() => ({ detail: 'Unknown error structure' })); // Try to parse error detail
+                     throw new Error(`Translation failed: ${response.status} ${response.statusText}. ${errorData.detail || ''}`);
+                }
+
+                const result = await response.json();
+                displayResults(result);
+
+            } catch (error) {
+                console.error("Translation error:", error);
+                showError(`An error occurred: ${error.message}`);
+                resultsArea.style.display = 'none'; // Hide results area on error
+            } finally {
+                setLoadingState(false);
+            }
+        }
+
+        function setLoadingState(isLoading) {
+            if (isLoading) {
+                generateButton.disabled = true;
+                loadingIndicator.style.display = 'block';
+                errorMessage.style.display = 'none';
+                resultsArea.style.display = 'none';
+            } else {
+                generateButton.disabled = false;
+                loadingIndicator.style.display = 'none';
+            }
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+        }
+
+        function displayResults(data) {
+            resultOriginalJp.textContent = data.original_japanese;
+
+            // Display simplified sentences as list items
+            resultSimplifiedJp.innerHTML = ''; // Clear previous list
+            data.simplified_japanese.forEach(sentence => {
+                const li = document.createElement('li');
+                li.textContent = sentence;
+                resultSimplifiedJp.appendChild(li);
+            });
+
+            resultInitialEn.textContent = data.initial_english;
+            resultFinalEn.textContent = data.final_english || "(No final text generated)"; // Handle potential empty string
+            resultCoverage.textContent = data.coverage.toFixed(2); // Format coverage
+
+            violationCount.textContent = data.violations.length;
+            if (data.violations.length > 0) {
+                 resultViolations.innerHTML = data.violations.map(v => `<code>${escapeHtml(v)}</code>`).join(', ');
+                 resultViolations.style.backgroundColor = '#fff8dc'; // Indicate violations present
+            } else {
+                 resultViolations.textContent = 'None';
+                 resultViolations.style.backgroundColor = '#f0fff0'; // Indicate full compliance
+            }
+
+
+            resultsArea.style.display = 'block';
+            errorMessage.style.display = 'none'; // Hide error message on success
+        }
+
+        // Helper to prevent basic XSS in code tags
+        function escapeHtml(unsafe) {
+            if (!unsafe) return "";
+            return unsafe
+                 .replace(/&/g, "&")
+                 .replace(/</g, "<")
+                 .replace(/>/g, ">")
+                 .replace(/"/g, """)
+                 .replace(/'/g, "'");
+        }
+
+        // Initialize the app when the page loads
+        document.addEventListener('DOMContentLoaded', initializeApp);
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# --- requirements.txt ---
+fastapi
+uvicorn[standard]
+torch
+transformers
+accelerate
+sentencepiece
+spacy
+# Download the Japanese model for spaCy during Docker build (see Dockerfile)
+ja_core_news_sm
+huggingface_hub
+requests
+starlette
+nltk # Optional for later
